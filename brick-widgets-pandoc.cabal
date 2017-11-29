@@ -1,0 +1,50 @@
+name:                brick-widgets-pandoc
+version:             0.1.0
+synopsis:            A Brick widget for Pandoc documents
+description:
+  A Brick widget that provides a nicely decorated view of Pandoc
+  documents.
+homepage:            https://github.com/rycee/brick-widgets-pandoc/
+license:             BSD3
+license-file:        LICENSE
+author:              Robert Helgesson
+maintainer:          robert@rycee.net
+copyright:           (c) Robert Helgesson 2017
+category:            Graphics
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+library
+  exposed-modules:     Brick.Widgets.Pandoc
+  hs-source-dirs:      src
+  default-language:    Haskell2010
+  build-depends:
+    base >=4.9 && <4.10,
+    brick >= 0.17,
+    bytestring,
+    containers,
+    microlens >= 0.3.0,
+    microlens-th,
+    mtl,
+    pandoc-types >= 1.17,
+    prettyprinter >= 1.0.1,
+    text >= 0.7,
+    transformers,
+    uri == 0.1.*,
+    vector,
+    vty
+
+executable pandoc-viewer
+  hs-source-dirs:    programs
+  ghc-options:       -Wall -threaded
+  default-language:  Haskell2010
+  main-is:           PandocViewer.hs
+  build-depends:
+    base,
+    brick,
+    brick-widgets-pandoc,
+    microlens,
+    pandoc-types,
+    text,
+    vty
