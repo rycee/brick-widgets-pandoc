@@ -30,7 +30,7 @@ module Brick.Widgets.Pandoc
   ) where
 
 import qualified Brick as B
-import Data.List (groupBy, intersperse)
+import Data.List (intersperse)
 import           Data.Monoid
 import Data.String (fromString)
 import           Data.Text (Text)
@@ -159,16 +159,41 @@ renderDoc width doc =
     convertAttr attrMap (AnnotAttrName n) = B.attrMapLookup n attrMap
     convertAttr attrMap (AnnotLink _) = B.attrMapLookup pandocStyleLinkAttr attrMap
 
+-- | A monoid for recursively building images.
+data ImageBuilder =
+      ImgLine V.Image
+    | ImgBlock V.Image V.Image V.Image
+  deriving (Eq, Show)
+
+instance Monoid ImageBuilder where
+  mempty = ImgLine V.emptyImage
+  (ImgLine a) `mappend` (ImgLine b) = ImgLine (a V.<|> b)
+  (ImgLine a) `mappend` (ImgBlock b1 b2 b3) = ImgBlock (a V.<|> b1) b2 b3
+  (ImgBlock a1 a2 a3) `mappend` (ImgLine b) = ImgBlock a1 a2 (a3 V.<|> b)
+  (ImgBlock a1 a2 a3) `mappend` (ImgBlock b1 b2 b3) =
+      ImgBlock a1 (a2 <-?> (a3 V.<|> b1) <-?> b2) b3
+
+(<-?>) :: V.Image -> V.Image -> V.Image
+a <-?> b
+  | a == V.emptyImage = b
+  | b == V.emptyImage = a
+  | otherwise = a V.<-> b
+
+buildImage :: ImageBuilder -> V.Image
+buildImage (ImgLine a) = a
+buildImage (ImgBlock a b c) = a <-?> b <-?> c
+
 renderImage :: V.Attr -> PP.SimpleDocTree V.Attr -> V.Image
-renderImage    _ (PP.STEmpty) = V.emptyImage
-renderImage attr (PP.STChar ch) = V.char attr ch
-renderImage attr (PP.STText _ t) = V.text' attr t
-renderImage    _ (PP.STLine indent) = V.charFill mempty ' ' indent 1
-renderImage attr (PP.STAnn attr' tree) = renderImage (attr <> attr') tree
-renderImage attr (PP.STConcat ts) = V.vertCat . map V.horizCat . (map (map (renderImage attr))) . groupBy f $ ts
-  where
-    f _ (PP.STLine _) = False
-    f _ _ = True
+renderImage attr t = buildImage . renderImage' attr $ t
+
+renderImage' :: V.Attr -> PP.SimpleDocTree V.Attr -> ImageBuilder
+renderImage'    _ (PP.STEmpty) = ImgLine V.emptyImage
+renderImage' attr (PP.STChar ch) = ImgLine (V.char attr ch)
+renderImage' attr (PP.STText _ t) = ImgLine (V.text' attr t)
+renderImage'    _ (PP.STLine indent) =
+    ImgBlock V.emptyImage V.emptyImage (V.charFill mempty ' ' indent 1)
+renderImage' attr (PP.STAnn attr' tree) = renderImage' (attr <> attr') tree
+renderImage' attr (PP.STConcat ts) = foldMap (renderImage' attr) $ ts
 
 renderPandoc :: Pandoc.Pandoc -> B.RenderM n (PP.Doc Annot)
 renderPandoc (Pandoc.Pandoc _ blocks)= renderBlocks blocks

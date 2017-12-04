@@ -54,6 +54,9 @@ pandocDoc =
         horizontalRule <>
         header 4 "Links and images" <>
         para ("An " <> link "http://www.example.org/" "link" "example link" <> ".") <>
+        para ("A very very very very very very very very long line with a "
+              <> link "http://www.example.org/" "link" "link that has a very very very very very very very very long title"
+              <> " that we can use to check how links are broken.") <>
         para ("And an " <> B.image "https://rycee.net/images/haskell-logo.png" "example image" "image" <> ".") <>
         horizontalRule <>
         header 5 "Simple table" <>
