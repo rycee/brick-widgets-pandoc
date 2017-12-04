@@ -14,6 +14,7 @@ module Brick.Widgets.Pandoc
 
   -- * Attributes
   , pandocStyleBlockQuoteAttr
+  , pandocStyleCodeAttr
   , pandocStyleCodeBlockAttr
   , pandocStyleDefinitionListTermAttr
   , pandocStyleEmphAttr
@@ -78,6 +79,9 @@ data Annot = AnnotLink Text | AnnotAttrName B.AttrName
 
 pandocStyleBlockQuoteAttr :: B.AttrName
 pandocStyleBlockQuoteAttr = "pandoc" <> "style" <> "blockquote"
+
+pandocStyleCodeAttr :: B.AttrName
+pandocStyleCodeAttr = "pandoc" <> "style" <> "code"
 
 pandocStyleCodeBlockAttr :: B.AttrName
 pandocStyleCodeBlockAttr = "pandoc" <> "style" <> "codeBlock"
@@ -210,7 +214,7 @@ renderInlines = fmap (foldr (PP.<>) mempty) . mapM renderInline
 
 renderInline :: Pandoc.Inline -> B.RenderM n (PP.Doc Annot)
 renderInline (Pandoc.Cite _ inlines) = renderInlines inlines
-renderInline (Pandoc.Code _ code) = return $ renderCodeBlock code
+renderInline (Pandoc.Code _ code) = return . renderCode $ code
 renderInline (Pandoc.Emph inlines) = renderEm inlines
 renderInline (Pandoc.Image _ inlines target) = renderLink (const $ renderInlines inlines) target
 renderInline (Pandoc.LineBreak) = return $ PP.line
@@ -251,6 +255,11 @@ renderHeader mark level inlines =
 
 renderEm :: [Pandoc.Inline] -> B.RenderM n (PP.Doc Annot)
 renderEm = fmap (PP.annotate (AnnotAttrName pandocStyleEmphAttr)) . renderInlines
+
+renderCode :: String -> PP.Doc Annot
+renderCode =
+    PP.annotate (AnnotAttrName pandocStyleCodeAttr)
+    . PP.pretty
 
 renderCodeBlock :: String -> PP.Doc Annot
 renderCodeBlock =
