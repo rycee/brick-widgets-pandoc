@@ -42,6 +42,8 @@ pandocDoc =
         horizontalRule <>
         header 3 "Code block" <>
         codeBlock "main :: IO()\nmain = putStrLn \"Hello, world!\"" <>
+        header 3 "Code block with \\r" <>
+        codeBlock "main :: IO()\r\nmain = putStrLn \"Hello, world!\"" <>
         header 3 "Block quote" <>
         blockQuote (para "To be, or not to be: that is the question.") <>
         header 3 "Line block" <>

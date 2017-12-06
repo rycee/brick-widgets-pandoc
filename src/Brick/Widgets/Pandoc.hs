@@ -292,7 +292,9 @@ renderCodeBlock =
     . PP.indent 4
     . PP.concatWith (PP.surround PP.hardline)
     . map PP.pretty
-    . lines
+    . T.lines
+    . T.filter ('\r' /=)
+    . T.pack
 
 renderBlockquote :: [Pandoc.Block] -> B.RenderM n (PP.Doc Annot)
 renderBlockquote =
