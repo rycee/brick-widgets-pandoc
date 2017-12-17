@@ -218,14 +218,7 @@ renderBlock (Pandoc.Header 1 _ inlines) = renderHeader "==" 1 inlines
 renderBlock (Pandoc.Header 2 _ inlines) = renderHeader "--" 2 inlines
 renderBlock (Pandoc.Header 3 _ inlines) = renderHeader "-" 3 inlines
 renderBlock (Pandoc.Header n _ inlines) = renderHeader "" n inlines
-renderBlock (Pandoc.HorizontalRule) =
-  do
-    context <- B.getContext
-    let w = context ^. B.availWidthL
-    return
-        . PP.annotate (AnnotAttrName pandocStyleHorizRuleAttr)
-        . PP.pretty
-        $ T.replicate w "═"
+renderBlock (Pandoc.HorizontalRule) = return renderHorizontalRule
 renderBlock (Pandoc.LineBlock inlines) = fmap (PP.vcat . map (PP.nest 2)) . mapM renderInlines $ inlines
 renderBlock (Pandoc.Null) = return mempty
 renderBlock (Pandoc.OrderedList _ blockss) =
@@ -326,3 +319,13 @@ renderLink titleRender target@(url, _) =
   do
     title <- titleRender target
     return . PP.annotate (AnnotLink (T.pack url)) $ title
+
+-- | Pretty-prints a horizontal rule. A horizontal rule is simply a
+-- line of some large width.
+renderHorizontalRule :: PP.Doc Annot
+renderHorizontalRule =
+    PP.annotate (AnnotAttrName pandocStyleHorizRuleAttr)
+    . PP.pretty
+    $ T.replicate w "═"
+  where
+    w = 200
