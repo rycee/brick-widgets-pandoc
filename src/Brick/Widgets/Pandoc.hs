@@ -30,6 +30,7 @@ module Brick.Widgets.Pandoc
   ) where
 
 import qualified Brick as B
+import Data.Functor.Identity (runIdentity)
 import Data.List (intersperse)
 import           Data.Monoid
 import Data.String (fromString)
@@ -133,14 +134,16 @@ renderPandocView pv =
     inner width =
       B.viewport (pv ^. pvViewportNameL) B.Both
       $ B.Widget B.Fixed B.Fixed
-      $ do
-          let doc =
-                if pv ^. pvShowRawL
-                then Pandoc.doc . Pandoc.plain . Pandoc.text $ pv ^. pvRawDoc
-                else pv ^. pvDocL
-          ppDoc <- renderPandoc doc
-          img <- renderDoc width ppDoc
-          return $ set B.imageL img B.emptyResult
+      $ let
+          doc =
+            if pv ^. pvShowRawL
+            then Pandoc.doc . Pandoc.plain . Pandoc.text $ pv ^. pvRawDoc
+            else pv ^. pvDocL
+          ppDoc = runIdentity (renderPandoc doc)
+        in
+          do
+            img <- renderDoc width ppDoc
+            return $ set B.imageL img B.emptyResult
 
 renderDoc :: Int -> PP.Doc Annot -> B.RenderM n V.Image
 renderDoc width doc =
@@ -198,17 +201,17 @@ renderImage' attr = go
     go (PP.STAnn attr' tree) = renderImage' (attr <> attr') tree
     go (PP.STConcat ts) = foldMap go ts
 
-renderPandoc :: Pandoc.Pandoc -> B.RenderM n (PP.Doc Annot)
+renderPandoc :: Monad m => Pandoc.Pandoc -> m (PP.Doc Annot)
 renderPandoc (Pandoc.Pandoc _ blocks)= renderBlocks blocks
 
-renderBlocks :: [Pandoc.Block] -> B.RenderM n (PP.Doc Annot)
+renderBlocks :: Monad m => [Pandoc.Block] -> m (PP.Doc Annot)
 renderBlocks = fmap (PP.vcat . intersperse (PP.pretty ' ')) . mapM renderBlock
 
 -- | Helper to /roughly/ pretty print an instance of 'Show'.
 dumpRaw :: Show a => a -> PP.Doc b
 dumpRaw = PP.reflow . T.pack . show
 
-renderBlock :: Pandoc.Block -> B.RenderM n (PP.Doc Annot)
+renderBlock :: Monad m => Pandoc.Block -> m (PP.Doc Annot)
 renderBlock (Pandoc.BlockQuote blocks) = renderBlockquote blocks
 renderBlock (Pandoc.BulletList blockss) = fmap PP.vcat . mapM (renderLi "•") $ blockss
 renderBlock (Pandoc.CodeBlock _ code) = return $ renderCodeBlock code
@@ -230,10 +233,10 @@ renderBlock (Pandoc.Plain inlines) = renderInlines inlines
 renderBlock (Pandoc.RawBlock _ _) = return mempty
 renderBlock t@(Pandoc.Table _ _ _ _ _) = return $ "[Tables are unsupported:" PP.<+> dumpRaw t PP.<> "]"
 
-renderInlines :: [Pandoc.Inline] -> B.RenderM n (PP.Doc Annot)
+renderInlines :: Monad m => [Pandoc.Inline] -> m (PP.Doc Annot)
 renderInlines = fmap (foldr (PP.<>) mempty) . mapM renderInline
 
-renderInline :: Pandoc.Inline -> B.RenderM n (PP.Doc Annot)
+renderInline :: Monad m => Pandoc.Inline -> m (PP.Doc Annot)
 renderInline (Pandoc.Cite _ inlines) = renderInlines inlines
 renderInline (Pandoc.Code _ code) = return . renderCode $ code
 renderInline (Pandoc.Emph inlines) = renderEm inlines
@@ -256,7 +259,7 @@ renderInline (Pandoc.Strong inlines) = renderEm inlines
 renderInline (Pandoc.Subscript inlines) = renderInlines inlines
 renderInline (Pandoc.Superscript inlines) = renderInlines inlines
 
-renderStrike :: [Pandoc.Inline] -> B.RenderM n (PP.Doc Annot)
+renderStrike :: Monad m => [Pandoc.Inline] -> m (PP.Doc Annot)
 renderStrike ts =
   do
     inner <- renderInlines ts
@@ -264,7 +267,7 @@ renderStrike ts =
   where
     strike = "-"
 
-renderHeader :: PP.Doc Annot -> Int -> [Pandoc.Inline] -> B.RenderM n (PP.Doc Annot)
+renderHeader :: Monad m => PP.Doc Annot -> Int -> [Pandoc.Inline] -> m (PP.Doc Annot)
 renderHeader mark level inlines =
   do
     inner <- renderInlines inlines
@@ -274,7 +277,7 @@ renderHeader mark level inlines =
   where
     attrName = pandocStyleHeaderAttr <> (fromString . show $ level)
 
-renderEm :: [Pandoc.Inline] -> B.RenderM n (PP.Doc Annot)
+renderEm :: Monad m => [Pandoc.Inline] -> m (PP.Doc Annot)
 renderEm = fmap (PP.annotate (AnnotAttrName pandocStyleEmphAttr)) . renderInlines
 
 renderCode :: String -> PP.Doc Annot
@@ -292,23 +295,24 @@ renderCodeBlock =
     . T.filter ('\r' /=)
     . T.pack
 
-renderBlockquote :: [Pandoc.Block] -> B.RenderM n (PP.Doc Annot)
+renderBlockquote :: Monad m => [Pandoc.Block] -> m (PP.Doc Annot)
 renderBlockquote =
     fmap (PP.annotate (AnnotAttrName pandocStyleBlockQuoteAttr) . PP.indent 4)
     . renderBlocks
 
-annotAttrName :: B.AttrName -> B.RenderM n (PP.Doc Annot) -> B.RenderM n (PP.Doc Annot)
+annotAttrName :: Monad m => B.AttrName -> m (PP.Doc Annot) -> m (PP.Doc Annot)
 annotAttrName n = fmap (PP.annotate (AnnotAttrName n))
 
-renderDefinition :: ([Pandoc.Inline], [[Pandoc.Block]])
-                 -> B.RenderM n (PP.Doc Annot)
+renderDefinition :: Monad m
+                 => ([Pandoc.Inline], [[Pandoc.Block]])
+                 -> m (PP.Doc Annot)
 renderDefinition (term, definition) =
   do
     rTerm <- annotAttrName pandocStyleDefinitionListTermAttr . renderInlines $ term
     rDefinition <- fmap PP.vcat . mapM renderBlocks $ definition
     return $ rTerm PP.<> ":" PP.<+> PP.nest 4 rDefinition
 
-renderLi :: String -> [Pandoc.Block] -> B.RenderM m (PP.Doc Annot)
+renderLi :: Monad m => String -> [Pandoc.Block] -> m (PP.Doc Annot)
 renderLi ch = fmap ((PP.pretty ch <+>) . PP.align) . renderBlocks
 
 renderLink :: Monad m
