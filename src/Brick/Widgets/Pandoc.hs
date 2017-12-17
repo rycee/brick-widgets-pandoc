@@ -187,13 +187,16 @@ renderImage :: V.Attr -> PP.SimpleDocTree V.Attr -> V.Image
 renderImage attr t = buildImage . renderImage' attr $ t
 
 renderImage' :: V.Attr -> PP.SimpleDocTree V.Attr -> ImageBuilder
-renderImage'    _ (PP.STEmpty) = ImgLine V.emptyImage
-renderImage' attr (PP.STChar ch) = ImgLine (V.char attr ch)
-renderImage' attr (PP.STText _ t) = ImgLine (V.text' attr t)
-renderImage'    _ (PP.STLine indent) =
-    ImgBlock V.emptyImage V.emptyImage (V.charFill mempty ' ' indent 1)
-renderImage' attr (PP.STAnn attr' tree) = renderImage' (attr <> attr') tree
-renderImage' attr (PP.STConcat ts) = foldMap (renderImage' attr) $ ts
+renderImage' attr = go
+  where
+    spaces n = V.charFill mempty ' ' n 1
+
+    go (PP.STEmpty) = ImgLine V.emptyImage
+    go (PP.STChar ch) = ImgLine (V.char attr ch)
+    go (PP.STText _ t) = ImgLine (V.text' attr t)
+    go (PP.STLine indent) = ImgBlock V.emptyImage V.emptyImage (spaces indent)
+    go (PP.STAnn attr' tree) = renderImage' (attr <> attr') tree
+    go (PP.STConcat ts) = foldMap go ts
 
 renderPandoc :: Pandoc.Pandoc -> B.RenderM n (PP.Doc Annot)
 renderPandoc (Pandoc.Pandoc _ blocks)= renderBlocks blocks
