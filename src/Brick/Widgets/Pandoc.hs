@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -9,7 +10,9 @@ module Brick.Widgets.Pandoc
   ( PandocView
   , pandocView
   , pvDocL
+  , pvLinkEntryL
   , pvShowRawL
+  , pvLinkIdEnterKey
   , renderPandocView
 
   -- * Attributes
@@ -27,11 +30,14 @@ module Brick.Widgets.Pandoc
   , pandocStyleHeaderAttr
   , pandocStyleHorizRuleAttr
   , pandocStyleLinkAttr
+  , pandocStyleLinkHandleAttr
   ) where
 
 import qualified Brick as B
-import Data.Functor.Identity (runIdentity)
+import Control.Monad.State.Strict (evalState, State)
+import qualified Control.Monad.State.Strict as State
 import Data.List (intersperse)
+import Data.Maybe (isJust)
 import           Data.Monoid
 import Data.String (fromString)
 import           Data.Text (Text)
@@ -44,6 +50,11 @@ import qualified Data.Text.Prettyprint.Doc.Util as PP
 import qualified Graphics.Vty as V
 import           Lens.Micro
 import qualified Text.Pandoc.Builder as Pandoc
+import qualified Text.Pandoc.Walk as Pandoc
+
+-- | A unique identifier of a link-like object.
+newtype LinkId = LinkId Int
+  deriving (Eq, Ord, Show, Enum)
 
 data PandocView n =
     PandocView {
@@ -55,6 +66,9 @@ data PandocView n =
 
                -- | Whether to show the raw Pandoc structure.
                , pvShowRaw :: !Bool
+
+               -- | Currently entered link ID.
+               , pvLinkIdEntry :: Maybe Text
                }
 
 B.suffixLenses ''PandocView
@@ -70,13 +84,51 @@ pandocView name =
     PandocView { pvDoc = mempty
                , pvViewportName = name
                , pvShowRaw = False
+               , pvLinkIdEntry = Nothing
                }
 
 pvRawDoc :: Getting r (PandocView n) String
 pvRawDoc = to (show . pvDoc)
 
-data Annot = AnnotLink Text | AnnotAttrName B.AttrName
+pvLinkEntryL :: Lens' (PandocView n) Bool
+pvLinkEntryL = pvLinkIdEntryL . lens isJust (\_ s -> if s then Just "" else Nothing)
+
+pvLinks :: SimpleGetter (PandocView n) [(LinkId, Text)]
+pvLinks = to (zip [(LinkId 0)..] . Pandoc.query extractUrl . pvDoc)
+  where
+    extractUrl (Pandoc.Link _ _ (u,_)) = [(T.pack u)]
+    extractUrl (Pandoc.Image _ _ (u,_)) = [(T.pack u)]
+    extractUrl _ = []
+
+-- | Enter a link selection key. The view must be in a link entry mode
+-- for this function to make a difference.
+pvLinkIdEnterKey :: V.Key -> PandocView n -> ([Text], PandocView n)
+pvLinkIdEnterKey key pv = maybe ([], pv) id $
+  do
+    currentId <- pv ^. pvLinkIdEntryL
+
+    let lidshow (LinkId lid, _) = T.pack . show $ lid
+        matching =
+          map snd
+          . filter (T.isPrefixOf currentId . lidshow)
+          . (^. pvLinks)
+        updated s = (matching pv', pv')
+          where pv' = set pvLinkIdEntryL (Just s) pv
+
+    return
+      $ case key of
+        V.KChar ch -> updated (T.snoc currentId ch)
+        V.KBS
+          | not (T.null currentId) -> updated (T.init currentId)
+          | otherwise -> (matching pv, pv)
+        V.KEnter -> (matching pv, set pvLinkIdEntryL Nothing pv)
+        _ -> ([], set pvLinkIdEntryL Nothing pv)
+
+data Annotation a = AnnotLink LinkId Text | AnnotAttrName a
   deriving (Eq, Show)
+
+type Annot = Annotation B.AttrName
+type Annot' = Annotation V.Attr
 
 pandocStyleBlockQuoteAttr :: B.AttrName
 pandocStyleBlockQuoteAttr = "pandoc" <> "style" <> "blockquote"
@@ -120,6 +172,9 @@ pandocStyleHorizRuleAttr = "pandoc" <> "style" <> "hr"
 pandocStyleLinkAttr :: B.AttrName
 pandocStyleLinkAttr = "pandoc" <> "style" <> "link"
 
+pandocStyleLinkHandleAttr :: B.AttrName
+pandocStyleLinkHandleAttr = "pandoc" <> "style" <> "link" <> "handle"
+
 renderPandocView :: (Ord n, Show n) => PandocView n -> B.Widget n
 renderPandocView pv =
     B.Widget B.Greedy B.Greedy
@@ -139,28 +194,35 @@ renderPandocView pv =
             if pv ^. pvShowRawL
             then Pandoc.doc . Pandoc.plain . Pandoc.text $ pv ^. pvRawDoc
             else pv ^. pvDocL
-          ppDoc = runIdentity (renderPandoc doc)
+          ppDoc = evalState (renderPandoc doc) (LinkId 0)
         in
           do
-            img <- renderDoc width ppDoc
+            img <- renderDoc pv width ppDoc
             return $ set B.imageL img B.emptyResult
 
-renderDoc :: Int -> PP.Doc Annot -> B.RenderM n V.Image
-renderDoc width doc =
+renderDoc :: PandocView n -> Int -> PP.Doc Annot -> B.RenderM n V.Image
+renderDoc pv width doc =
   do
     context <- B.getContext
     let opts = PP.defaultLayoutOptions {
           PP.layoutPageWidth = PP.AvailablePerLine width 1.0
         }
         simpleDoc = PP.layoutPretty opts doc
+        attrMap = context ^. B.ctxAttrMapL
+        attrSelected = B.attrMapLookup pandocStyleLinkHandleAttr attrMap
     return
-        . (renderImage V.defAttr)
+        . renderImage (renderLinkHandle currentLinkId attrSelected)
         . PP.treeForm
-        . fmap (convertAttr (context ^. B.ctxAttrMapL))
+        . fmap (convertAttr attrMap)
         $ simpleDoc
   where
-    convertAttr attrMap (AnnotAttrName n) = B.attrMapLookup n attrMap
-    convertAttr attrMap (AnnotLink _) = B.attrMapLookup pandocStyleLinkAttr attrMap
+    showLinks = pv ^. pvLinkEntryL
+    currentLinkId = pv ^. pvLinkIdEntryL
+
+    convertAttr attrMap (AnnotAttrName n) = AnnotAttrName $ B.attrMapLookup n attrMap
+    convertAttr _ (AnnotLink linkId linkTarget)
+      | showLinks = AnnotLink linkId linkTarget
+      | otherwise = AnnotAttrName mempty
 
 -- | A monoid for recursively building images.
 data ImageBuilder =
@@ -186,32 +248,56 @@ buildImage :: ImageBuilder -> V.Image
 buildImage (ImgLine a) = a
 buildImage (ImgBlock a b c) = a <-?> b <-?> c
 
-renderImage :: V.Attr -> PP.SimpleDocTree V.Attr -> V.Image
-renderImage attr t = buildImage . renderImage' attr $ t
+renderLinkHandle :: Maybe Text -> V.Attr -> V.Attr -> Text -> V.Image
+renderLinkHandle Nothing _ _ _ = mempty
+renderLinkHandle (Just currentId) attrSelected attr linkId
+  | currentId `T.isPrefixOf` linkId = img
+  | otherwise = mempty
+  where
+    remainingId = T.drop (T.length currentId) linkId
+    img = V.char attr '['
+          V.<|> V.text' (attr <> attrSelected) currentId
+          V.<|> V.text' attr remainingId
+          V.<|> V.char attr ']'
 
-renderImage' :: V.Attr -> PP.SimpleDocTree V.Attr -> ImageBuilder
-renderImage' attr = go
+renderImage :: (V.Attr -> Text -> V.Image) -> PP.SimpleDocTree Annot' -> V.Image
+renderImage linkHandle t = buildImage . renderImage' linkHandle V.defAttr $ t
+
+renderImage' :: (V.Attr -> Text -> V.Image) -> V.Attr -> PP.SimpleDocTree Annot' -> ImageBuilder
+renderImage' linkHandle attr = go
   where
     spaces n = V.charFill mempty ' ' n 1
+
+    linkIdImg = linkHandle attr . T.pack . show
+
+    overlayImgLeft a b = a V.<|> V.translateX (negate $ V.imageWidth a) b
+    overlayLinkId (LinkId lid) (ImgLine a) = ImgLine (overlayImgLeft (linkIdImg lid) a)
+    overlayLinkId (LinkId lid) (ImgBlock a b c)
+      | a /= V.emptyImage = ImgBlock (overlayImgLeft (linkIdImg lid) a) b c
+      | b /= V.emptyImage = ImgBlock a (overlayImgLeft (linkIdImg lid) b) c
+      | otherwise = ImgBlock a b (overlayImgLeft (linkIdImg lid) c)
 
     go (PP.STEmpty) = ImgLine V.emptyImage
     go (PP.STChar ch) = ImgLine (V.char attr ch)
     go (PP.STText _ t) = ImgLine (V.text' attr t)
     go (PP.STLine indent) = ImgBlock V.emptyImage V.emptyImage (spaces indent)
-    go (PP.STAnn attr' tree) = renderImage' (attr <> attr') tree
+    go (PP.STAnn (AnnotLink linkId _) tree) = overlayLinkId linkId (go tree)
+    go (PP.STAnn (AnnotAttrName attr') tree) = renderImage' linkHandle (attr <> attr') tree
     go (PP.STConcat ts) = foldMap go ts
 
-renderPandoc :: Monad m => Pandoc.Pandoc -> m (PP.Doc Annot)
+type RenderPandoc = State LinkId
+
+renderPandoc :: Pandoc.Pandoc -> RenderPandoc (PP.Doc Annot)
 renderPandoc (Pandoc.Pandoc _ blocks)= renderBlocks blocks
 
-renderBlocks :: Monad m => [Pandoc.Block] -> m (PP.Doc Annot)
+renderBlocks :: [Pandoc.Block] -> RenderPandoc (PP.Doc Annot)
 renderBlocks = fmap (PP.vcat . intersperse (PP.pretty ' ')) . mapM renderBlock
 
 -- | Helper to /roughly/ pretty print an instance of 'Show'.
 dumpRaw :: Show a => a -> PP.Doc b
 dumpRaw = PP.reflow . T.pack . show
 
-renderBlock :: Monad m => Pandoc.Block -> m (PP.Doc Annot)
+renderBlock :: Pandoc.Block -> RenderPandoc (PP.Doc Annot)
 renderBlock (Pandoc.BlockQuote blocks) = renderBlockquote blocks
 renderBlock (Pandoc.BulletList blockss) = fmap PP.vcat . mapM (renderLi "•") $ blockss
 renderBlock (Pandoc.CodeBlock _ code) = return $ renderCodeBlock code
@@ -233,10 +319,10 @@ renderBlock (Pandoc.Plain inlines) = renderInlines inlines
 renderBlock (Pandoc.RawBlock _ _) = return mempty
 renderBlock t@(Pandoc.Table _ _ _ _ _) = return $ "[Tables are unsupported:" PP.<+> dumpRaw t PP.<> "]"
 
-renderInlines :: Monad m => [Pandoc.Inline] -> m (PP.Doc Annot)
+renderInlines :: [Pandoc.Inline] -> RenderPandoc (PP.Doc Annot)
 renderInlines = fmap (foldr (PP.<>) mempty) . mapM renderInline
 
-renderInline :: Monad m => Pandoc.Inline -> m (PP.Doc Annot)
+renderInline :: Pandoc.Inline -> RenderPandoc (PP.Doc Annot)
 renderInline (Pandoc.Cite _ inlines) = renderInlines inlines
 renderInline (Pandoc.Code _ code) = return . renderCode $ code
 renderInline (Pandoc.Emph inlines) = renderEm inlines
@@ -259,7 +345,7 @@ renderInline (Pandoc.Strong inlines) = renderEm inlines
 renderInline (Pandoc.Subscript inlines) = renderInlines inlines
 renderInline (Pandoc.Superscript inlines) = renderInlines inlines
 
-renderStrike :: Monad m => [Pandoc.Inline] -> m (PP.Doc Annot)
+renderStrike :: [Pandoc.Inline] -> RenderPandoc (PP.Doc Annot)
 renderStrike ts =
   do
     inner <- renderInlines ts
@@ -267,7 +353,7 @@ renderStrike ts =
   where
     strike = "-"
 
-renderHeader :: Monad m => PP.Doc Annot -> Int -> [Pandoc.Inline] -> m (PP.Doc Annot)
+renderHeader :: PP.Doc Annot -> Int -> [Pandoc.Inline] -> RenderPandoc (PP.Doc Annot)
 renderHeader mark level inlines =
   do
     inner <- renderInlines inlines
@@ -277,7 +363,7 @@ renderHeader mark level inlines =
   where
     attrName = pandocStyleHeaderAttr <> (fromString . show $ level)
 
-renderEm :: Monad m => [Pandoc.Inline] -> m (PP.Doc Annot)
+renderEm :: [Pandoc.Inline] -> RenderPandoc (PP.Doc Annot)
 renderEm = fmap (PP.annotate (AnnotAttrName pandocStyleEmphAttr)) . renderInlines
 
 renderCode :: String -> PP.Doc Annot
@@ -295,7 +381,7 @@ renderCodeBlock =
     . T.filter ('\r' /=)
     . T.pack
 
-renderBlockquote :: Monad m => [Pandoc.Block] -> m (PP.Doc Annot)
+renderBlockquote :: [Pandoc.Block] -> RenderPandoc (PP.Doc Annot)
 renderBlockquote =
     fmap (PP.annotate (AnnotAttrName pandocStyleBlockQuoteAttr) . PP.indent 4)
     . renderBlocks
@@ -303,26 +389,36 @@ renderBlockquote =
 annotAttrName :: Monad m => B.AttrName -> m (PP.Doc Annot) -> m (PP.Doc Annot)
 annotAttrName n = fmap (PP.annotate (AnnotAttrName n))
 
-renderDefinition :: Monad m
-                 => ([Pandoc.Inline], [[Pandoc.Block]])
-                 -> m (PP.Doc Annot)
+renderDefinition :: ([Pandoc.Inline], [[Pandoc.Block]])
+                 -> RenderPandoc (PP.Doc Annot)
 renderDefinition (term, definition) =
   do
     rTerm <- annotAttrName pandocStyleDefinitionListTermAttr . renderInlines $ term
     rDefinition <- fmap PP.vcat . mapM renderBlocks $ definition
     return $ rTerm PP.<> ":" PP.<+> PP.nest 4 rDefinition
 
-renderLi :: Monad m => String -> [Pandoc.Block] -> m (PP.Doc Annot)
+renderLi :: String -> [Pandoc.Block] -> RenderPandoc (PP.Doc Annot)
 renderLi ch = fmap ((PP.pretty ch <+>) . PP.align) . renderBlocks
 
-renderLink :: Monad m
-           => (Pandoc.Target -> m (PP.Doc Annot))
+-- --renderImgLink :: [(Text, Text)] -> PP.Doc Annot
+-- renderImgLink as = renderLink title as
+--   where
+--     title (url, _) = PP.angles (fillSepWords imgTitle)
+--       where
+--         imgTitle = maybe url id $ lookup "title" as
+
+renderLink :: (Pandoc.Target -> RenderPandoc (PP.Doc Annot))
            -> Pandoc.Target
-           -> m (PP.Doc Annot)
+           -> RenderPandoc (PP.Doc Annot)
 renderLink titleRender target@(url, _) =
   do
     title <- titleRender target
-    return . PP.annotate (AnnotLink (T.pack url)) $ title
+    linkId <- State.get
+    State.modify' succ
+    return
+        . PP.annotate (AnnotAttrName pandocStyleLinkAttr)
+        . PP.annotate (AnnotLink linkId (T.pack url))
+        $ title
 
 -- | Pretty-prints a horizontal rule. A horizontal rule is simply a
 -- line of some large width.

@@ -5,10 +5,15 @@ module Main where
 import Brick
 import Brick.Widgets.Border
 import Brick.Widgets.Pandoc
+import Control.Monad (void, when)
+import Control.Monad.IO.Class (liftIO)
+import Data.List (intersperse)
+import qualified Data.Text as T
 import Graphics.Vty.Attributes
 import Graphics.Vty.Input.Events
 import Lens.Micro
 import Text.Pandoc.Builder as B
+import Web.Browser (openBrowser)
 
 data VpPandoc = VpPandoc
   deriving (Eq, Ord, Show)
@@ -55,7 +60,7 @@ pandocDoc =
                   ] <>
         horizontalRule <>
         header 4 "Links and images" <>
-        para ("An " <> link "http://www.example.org/" "link" "example link" <> ".") <>
+        para (text "A bunch of links: " <>  manyLinks <> ".") <>
         para ("A very very very very very very very very long line with a "
               <> link "http://www.example.org/" "link" "link that has a very very very very very very very very long title"
               <> " that we can use to check how links are broken.") <>
@@ -64,6 +69,12 @@ pandocDoc =
         header 5 "Simple table" <>
         simpleTable [plain "col 1", plain "col 2"] [ [ plain "cell 1", plain "cell 2" ]
                                                    , [ plain "cell 3", plain "cell 4" ] ]
+  where
+    manyLinks =
+        mconcat
+        . intersperse ("," <> softbreak)
+        $ [ link ("http://www.example.org/" <> istr) ("link-" <> istr) (text $ "link " <> istr)
+          | i <- [(1::Int) .. 12], let istr = show i ]
 
 initState :: PandocView VpPandoc
 initState = set pvDocL pandocDoc $ pandocView VpPandoc
@@ -75,6 +86,14 @@ handleEvent :: PandocView VpPandoc
             -> BrickEvent VpPandoc e
             -> EventM VpPandoc (Next (PandocView VpPandoc))
 handleEvent s (VtyEvent (EvResize _ _)) = continue s
+handleEvent s (VtyEvent (EvKey key []))
+  | s ^. pvLinkEntryL =
+    do
+      let (links, s') = pvLinkIdEnterKey key s
+      when (not (s' ^. pvLinkEntryL || null links))
+        $ void . liftIO . openBrowser . T.unpack . head $ links
+      continue s'
+handleEvent s (VtyEvent (EvKey (KChar 'o') [])) = continue . (pvLinkEntryL %~ not) $ s
 handleEvent s (VtyEvent (EvKey (KChar 'r') [])) = continue . (pvShowRawL %~ not) $ s
 handleEvent s (VtyEvent (EvKey KUp [])) = vScrollBy pandocScroll (-1) >> continue s
 handleEvent s (VtyEvent (EvKey KDown [])) = vScrollBy pandocScroll 1 >> continue s
@@ -90,6 +109,7 @@ attributes :: AttrMap
 attributes = attrMap defAttr
     [ (pandocStyleHeaderAttr,      fg brightRed)
     , (pandocStyleLinkAttr,        fg brightBlue)
+    , (pandocStyleLinkHandleAttr,  blue `on` brightRed)
     , (pandocStyleDefinitionListTermAttr, fg brightWhite)
     , (pandocStyleHorizRuleAttr,   fg black)
     ]

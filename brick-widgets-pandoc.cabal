@@ -45,6 +45,7 @@ executable pandoc-viewer
     brick,
     brick-widgets-pandoc,
     microlens,
+    open-browser >= 0.1.2.0,
     pandoc-types,
     text,
     vty
