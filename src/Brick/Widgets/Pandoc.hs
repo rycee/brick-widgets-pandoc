@@ -87,7 +87,7 @@ pandocView name =
                , pvLinkIdEntry = Nothing
                }
 
-pvRawDoc :: Getting r (PandocView n) String
+pvRawDoc :: SimpleGetter (PandocView n) String
 pvRawDoc = to (show . pvDoc)
 
 pvLinkEntryL :: Lens' (PandocView n) Bool
